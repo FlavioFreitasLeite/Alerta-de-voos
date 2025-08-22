@@ -5,10 +5,16 @@ import { DayPicker } from 'react-day-picker';
 import type { DateRange } from 'react-day-picker';
 import 'react-day-picker/dist/style.css';
 
+// Interface para o tipo de dados do aeroporto
+interface Airport {
+  iataCode: string;
+  name: string;
+}
+
 // --- Componente Reutilizável de Autocomplete (Estilo Apple) ---
 const AutocompleteInput = ({ label, placeholder, onSelect, initialValue }: { label: string, placeholder: string, onSelect: (iataCode: string) => void, initialValue: string }) => {
   const [searchTerm, setSearchTerm] = useState(initialValue);
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = useState<Airport[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const debounceTimeout = useRef<NodeJS.Timeout | null>(null);
@@ -49,7 +55,7 @@ const AutocompleteInput = ({ label, placeholder, onSelect, initialValue }: { lab
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const handleSelect = (location: any) => {
+  const handleSelect = (location: Airport) => {
     setSearchTerm(location.name);
     onSelect(location.iataCode);
     setShowResults(false);
@@ -90,7 +96,6 @@ const AutocompleteInput = ({ label, placeholder, onSelect, initialValue }: { lab
     </div>
   );
 };
-
 // --- Ícone de Avião ---
 const PlaneIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2 h-5 w-5"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z" /></svg>
@@ -142,7 +147,7 @@ export default function FlightAlertsPage() {
   }, []);
 
   // FUNÇÃO handleSubmit QUE ESTAVA FALTANDO
-  const handleSubmit = async (event: FormEvent) => {
+   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setIsLoading(true);
     setMessage(null);
@@ -167,8 +172,9 @@ export default function FlightAlertsPage() {
 
       const result = await response.json();
       setMessage({ type: 'success', text: result.message || 'Alerta criado com sucesso!' });
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
+      setMessage({ type: 'error', text: errorMessage });
     } finally {
       setIsLoading(false);
     }
