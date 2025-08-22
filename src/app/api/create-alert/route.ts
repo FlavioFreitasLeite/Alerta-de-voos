@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import Amadeus from 'amadeus';
 import { Resend } from 'resend';
-import { PriceMetric, FlightOffer } from '@/app/types';
+import { PriceMetric } from '@/app/types';
 // --- Inicializa os clientes ---
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,

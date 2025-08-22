@@ -1,7 +1,7 @@
 // Substitua o conteúdo do arquivo: app/api/search-airports/route.ts
 import { NextResponse } from 'next/server';
 import Amadeus from 'amadeus';
-import { CityData, AirportsData, Airport } from '@/app/types';
+import { CityData, Airport } from '@/app/types';
 import { AmadeusCityResponse } from '@/app/types';
 // Inicializa o cliente da Amadeus
 const amadeus = new Amadeus({
