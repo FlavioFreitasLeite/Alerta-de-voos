@@ -1,0 +1,10 @@
+{
+  "crons": [
+    {
+      "path": "/api/check-prices",
+      "schedule": "0 10 * * *"
+    }
+  ]
+}
+```
+*`"schedule": "0 10 * * *"` significa "executar todos os dias às 10:00 da manhã (horário UTC)
