@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@sendgrid/mail": "^8.1.5",
     "@supabase/supabase-js": "^2.55.0",
     "amadeus": "^11.0.0",
     "date-fns": "^4.1.0",

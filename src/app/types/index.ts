@@ -3,15 +3,15 @@ export interface Airport {
   name: string;
 }
 
-export interface Alert {
-  id: number;
+interface Alert {
+  id: string;
+  user_email: string;
   origin: string;
   destination: string;
   departure_date: string;
-  return_date?: string;
+  return_date: string | null;
   passengers: number;
   last_price: number;
-  user_email: string;
   purchase_link: string;
   short_duration: boolean;
 }

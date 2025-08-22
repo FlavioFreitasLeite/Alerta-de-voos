@@ -1,8 +1,32 @@
+// Substitua o conteúdo do arquivo: app/api/check-prices/route.ts
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import Amadeus from 'amadeus';
-import { Resend } from 'resend';
-import { Alert, FlightOffer } from '@/app/types';
+import sgMail from '@sendgrid/mail'; // Alterado de Resend para SendGrid
+
+// --- Tipos ---
+interface Alert {
+  id: string;
+  user_email: string;
+  origin: string;
+  destination: string;
+  departure_date: string;
+  return_date: string | null;
+  passengers: number;
+  last_price: number;
+  purchase_link: string;
+  short_duration: boolean;
+}
+
+interface FlightOffer {
+  price: number;
+  [key: string]: any;
+}
+
+interface PriceInsights {
+    lowest_price: number;
+    price_level: string;
+    typical_price_range: [number, number];
+}
 
 // --- Inicializa os clientes ---
 const supabase = createClient(
@@ -10,37 +34,58 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const amadeus = new Amadeus({
-  clientId: process.env.AMADEUS_API_KEY!,
-  clientSecret: process.env.AMADEUS_API_SECRET!,
-});
+// Configura o SendGrid
+sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// --- Função de busca usando SerpApi ---
+async function getGoogleFlightsPrice(
+    alert: Alert
+): Promise<{ lowestPrice: number | null; priceInsights: PriceInsights | null }> {
+    try {
+        const params = new URLSearchParams({
+            engine: 'google_flights',
+            api_key: process.env.SERPAPI_KEY!,
+            departure_id: alert.origin,
+            arrival_id: alert.destination,
+            outbound_date: alert.departure_date,
+            adults: alert.passengers.toString(),
+            currency: 'BRL',
+            hl: 'pt-br',
+            gl: 'br',
+            stops: alert.short_duration ? '1' : '0',
+            deep_search: 'true',
+        });
 
-// --- Função para buscar o preço atualizado de um voo ---
-async function getUpdatedFlightPrice(alert: Alert): Promise<number | null> {
-  try {
-    const flightResponse = await amadeus.shopping.flightOffersSearch.get({
-      originLocationCode: alert.origin,
-      destinationLocationCode: alert.destination,
-      departureDate: alert.departure_date,
-      ...(alert.return_date && { returnDate: alert.return_date }),
-      adults: alert.passengers,
-      currencyCode: 'BRL',
-      max: 1,
-    });
+        if (alert.return_date) {
+            params.append('return_date', alert.return_date);
+        }
 
-    const flightData = (flightResponse as unknown as { data: FlightOffer[] }).data[0];
-    return flightData ? parseFloat(flightData.price.total) : null;
-  } catch (error) {
-    console.error(`Erro ao buscar preço para ${alert.origin}->${alert.destination}:`, error);
-    return null;
-  }
+        const response = await fetch(`https://serpapi.com/search?${params.toString()}`);
+        if (!response.ok) {
+            throw new Error(`SerpApi respondeu com o status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const allFlights: FlightOffer[] = [...(data.best_flights || []), ...(data.other_flights || [])];
+
+        if (allFlights.length === 0) {
+            return { lowestPrice: null, priceInsights: null };
+        }
+
+        const lowestPrice = allFlights.reduce((min, flight) => 
+            flight.price < min ? flight.price : min, 
+            allFlights[0].price
+        );
+
+        return { lowestPrice, priceInsights: data.price_insights || null };
+
+    } catch (error) {
+        console.error("Erro na busca da SerpApi (Google Flights):", error);
+        return { lowestPrice: null, priceInsights: null };
+    }
 }
 
-// --- Função principal que o Cron Job da Vercel irá chamar ---
 export async function GET() {
-  // 1. Pega todos os alertas do banco de dados
   const { data: alerts, error: fetchError } = await supabase.from('alerts').select('*');
 
   if (fetchError) {
@@ -54,42 +99,58 @@ export async function GET() {
   console.log(`Iniciando verificação para ${alerts.length} alerta(s)...`);
   const changes = [];
 
-  // 2. Itera sobre cada alerta
-  for (const alert of alerts) {
-    const newPrice = await getUpdatedFlightPrice(alert);
+  for (const alert of alerts as Alert[]) {
+    const { lowestPrice, priceInsights } = await getGoogleFlightsPrice(alert);
 
-    // Pula para o próximo se não encontrar um novo preço
-    if (newPrice === null) {
+    if (lowestPrice === null) {
       console.log(`Não foi possível encontrar novo preço para o alerta ID: ${alert.id}`);
       continue;
     }
 
-    // Converte o last_price para número para garantir a comparação correta
+    const newPrice = lowestPrice;
     const lastPrice = Number(alert.last_price);
 
-    // 3. Compara o preço antigo com o novo
     if (newPrice !== lastPrice) {
       console.log(`Mudança de preço detectada para o alerta ID: ${alert.id}. De ${lastPrice} para ${newPrice}`);
       
-      // 4. Se mudou, envia o e-mail
+      let priceContextMessage = '';
+      if (priceInsights) {
+          const level = priceInsights.price_level?.toLowerCase();
+          const typicalRange = priceInsights.typical_price_range;
+          if (level) {
+              priceContextMessage = `Este novo preço é considerado <strong>${level.toUpperCase()}</strong> para esta rota (normalmente entre R$${typicalRange[0]} e R$${typicalRange[1]}).`;
+          }
+      }
+      
       try {
-        await resend.emails.send({
-          from: 'onboarding@resend.dev', // IMPORTANTE: Para testes, use este e-mail.
+        const formattedOldPrice = lastPrice.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        const formattedNewPrice = newPrice.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+        // --- ATUALIZADO: Lógica de envio com SendGrid ---
+        const msg = {
           to: alert.user_email,
+          from: 'flaviofreitasleite@gmail.com', // IMPORTANTE: Use o seu e-mail verificado no SendGrid
           subject: `ALERTA DE PREÇO: Voo ${alert.origin} ✈️ ${alert.destination}`,
           html: `
-            <h1>O preço da sua viagem mudou!</h1>
-            <p>Olá!</p>
-            <p>O voo de <strong>${alert.origin}</strong> para <strong>${alert.destination}</strong> que você está monitorando mudou de preço.</p>
-            <p>Preço anterior: <strong>R$ ${lastPrice.toFixed(2)}</strong></p>
-            <p>Novo preço: <strong>R$ ${newPrice.toFixed(2)}</strong></p>
-            <p>Aproveite para conferir!</p>
-            <br>
-            <p><em>Equipe Alerta de Voos</em></p>
+            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+              <h1>O preço da sua viagem mudou!</h1>
+              <p>Olá!</p>
+              <p>O voo de <strong>${alert.origin}</strong> para <strong>${alert.destination}</strong> que você está monitorando mudou de preço.</p>
+              <p>Preço anterior: <strong>${formattedOldPrice}</strong></p>
+              <p>Novo preço: <strong style="font-size: 1.2em;">${formattedNewPrice}</strong></p>
+              ${priceContextMessage ? `<p style="background-color: #e8f0fe; padding: 10px; border-radius: 8px;">${priceContextMessage}</p>` : ''}
+              <a href="${alert.purchase_link}" target="_blank" style="display: inline-block; padding: 12px 24px; margin: 20px 0; font-size: 16px; color: white; background-color: #1a73e8; text-decoration: none; border-radius: 8px;">
+                Ver Oferta no Google Flights
+              </a>
+              <br><br>
+              <p>Aproveite para conferir!</p>
+              <p><em>Equipe Alerta de Voos</em></p>
+            </div>
           `,
-        });
+        };
 
-        // 5. Se o e-mail foi enviado, atualiza o preço no banco
+        await sgMail.send(msg);
+
         await supabase
           .from('alerts')
           .update({ last_price: newPrice })

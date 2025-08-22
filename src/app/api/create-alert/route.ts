@@ -1,59 +1,81 @@
 // Substitua o conteúdo do arquivo: app/api/create-alert/route.ts
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import Amadeus from 'amadeus';
-import { Resend } from 'resend';
-import { PriceMetric } from '@/app/types';
+import sgMail from '@sendgrid/mail';
+
+// --- Tipos ---
+interface FlightOffer {
+  price: number;
+  [key: string]: any;
+}
+
+interface PriceInsights {
+    lowest_price: number;
+    price_level: string;
+    typical_price_range: [number, number];
+}
+
 // --- Inicializa os clientes ---
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const amadeus = new Amadeus({
-  clientId: process.env.AMADEUS_API_KEY!,
-  clientSecret: process.env.AMADEUS_API_SECRET!,
-});
+// Configura o SendGrid
+sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// --- Função de busca usando SerpApi ---
+async function getGoogleFlightsPrice(
+    origin: string, 
+    destination: string, 
+    departureDate: string, 
+    returnDate: string | null, 
+    passengers: number, 
+    shortDuration: boolean
+): Promise<{ lowestPrice: number | null; priceInsights: PriceInsights | null }> {
+    try {
+        const params = new URLSearchParams({
+            engine: 'google_flights',
+            api_key: process.env.SERPAPI_KEY!,
+            departure_id: origin,
+            arrival_id: destination,
+            outbound_date: departureDate,
+            adults: passengers.toString(),
+            currency: 'BRL',
+            hl: 'pt-br',
+            gl: 'br',
+            stops: shortDuration ? '1' : '0',
+            deep_search: 'true',
+        });
 
-const formatDateForSkyscanner = (dateString: string) => {
-  return dateString.substring(2).replace(/-/g, '');
-};
+        if (returnDate) {
+            params.append('return_date', returnDate);
+        }
 
-// --- NOVO: Função para obter o contexto do preço ---
-async function getPriceContext(origin: string, destination: string, departureDate: string, currentPrice: number, isOneWay: boolean): Promise<string> {
-  try {
-    const response = await amadeus.analytics.itineraryPriceMetrics.get({
-      originIataCode: origin,
-      destinationIataCode: destination,
-      departureDate: departureDate,
-      currencyCode: 'BRL',
-      oneWay: isOneWay,
-    });
+        const response = await fetch(`https://serpapi.com/search?${params.toString()}`);
+        if (!response.ok) {
+            throw new Error(`SerpApi respondeu com o status: ${response.status}`);
+        }
 
-    const metrics = (response as unknown as { data: { priceMetrics: PriceMetric[] }[] }).data[0]?.priceMetrics;
-    if (!metrics) return '';
+        const data = await response.json();
+        const allFlights: FlightOffer[] = [...(data.best_flights || []), ...(data.other_flights || [])];
 
-    const firstQuartile = parseFloat(metrics.find((m: PriceMetric) => m.quartileRanking === 'FIRST')?.amount || '0');
-    const thirdQuartile = parseFloat(metrics.find((m: PriceMetric) => m.quartileRanking === 'THIRD')?.amount || '0');
+        if (allFlights.length === 0) {
+            return { lowestPrice: null, priceInsights: null };
+        }
 
-    if (currentPrice <= firstQuartile) {
-      return 'Este preço é considerado <strong>BAIXO</strong> para esta rota.';
+        const lowestPrice = allFlights.reduce((min, flight) => 
+            flight.price < min ? flight.price : min, 
+            allFlights[0].price
+        );
+
+        return { lowestPrice, priceInsights: data.price_insights || null };
+
+    } catch (error) {
+        console.error("Erro na busca da SerpApi (Google Flights):", error);
+        return { lowestPrice: null, priceInsights: null };
     }
-    if (currentPrice > firstQuartile && currentPrice <= thirdQuartile) {
-      return 'Este preço está <strong>NA MÉDIA</strong> para esta rota.';
-    }
-    if (currentPrice > thirdQuartile) {
-      return 'Este preço é considerado <strong>ALTO</strong> para esta rota.';
-    }
-    return '';
-  } catch (error) {
-    console.error("Erro ao buscar métricas de preço:", error);
-    return '';
-  }
 }
-
 
 export async function POST(request: Request) {
   try {
@@ -72,117 +94,63 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Dados incompletos.' }, { status: 400 });
     }
 
-    const searchRequest = {
-      currencyCode: 'BRL',
-      originDestinations: [{
-        id: '1',
-        originLocationCode: origin,
-        destinationLocationCode: destination,
-        departureDateTimeRange: { date: departureDate },
-      }],
-      travelers: Array.from({ length: passengers }, (_, i) => ({
-        id: (i + 1).toString(),
-        travelerType: 'ADULT',
-      })),
-      sources: ['GDS'],
-      searchCriteria: {
-        maxFlightOffers: 1,
-        flightFilters: {
-          connectionRestriction: {
-            maxNumberOfConnections: shortDuration ? 0 : undefined,
-          },
-        },
-      },
-    };
+    const { lowestPrice, priceInsights } = await getGoogleFlightsPrice(origin, destination, departureDate, returnDate, passengers, shortDuration);
 
-    if (returnDate) {
-      searchRequest.originDestinations.push({
-        id: '2',
-        originLocationCode: destination,
-        destinationLocationCode: origin,
-        departureDateTimeRange: { date: returnDate },
-      });
+    if (lowestPrice === null) {
+        return NextResponse.json({ error: 'Nenhum voo encontrado. Tente outras datas ou aeroportos.' }, { status: 404 });
     }
     
-    const flightResponse = await amadeus.shopping.flightOffersSearch.post(
-      JSON.stringify(searchRequest)
-    );
+    const initialPrice = lowestPrice;
+    console.log(`Preço mais baixo encontrado (Google Flights): R$ ${initialPrice}`);
 
-    const flightData = flightResponse.data[0];
-    if (!flightData) {
-      return NextResponse.json({ error: 'Nenhum voo encontrado para esta rota e data.' }, { status: 404 });
+    let priceContextMessage = '';
+    if (priceInsights) {
+        const level = priceInsights.price_level?.toLowerCase();
+        const typicalRange = priceInsights.typical_price_range;
+        if (level) {
+            priceContextMessage = `Este preço é considerado <strong>${level.toUpperCase()}</strong> para esta rota (normalmente entre R$${typicalRange[0]} e R$${typicalRange[1]}).`;
+        }
     }
 
-    const initialPrice = parseFloat(flightData.price.total);
-    console.log(`Preço inicial encontrado: R$ ${initialPrice}`);
+    const purchaseLink = `https://www.google.com/travel/flights?q=Flights%20from%20${origin}%20to%20${destination}%20on%20${departureDate}${returnDate ? `%20through%20${returnDate}` : ''}`;
+
+    await supabase.from('alerts').insert([{
+        user_email: userEmail, origin, destination, departure_date: departureDate,
+        return_date: returnDate, passengers, last_price: initialPrice,
+        purchase_link: purchaseLink, short_duration: shortDuration,
+    }]);
+
+    const formattedPrice = initialPrice.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
     
-    // --- NOVO: Busca o contexto do preço ---
-    const priceContextMessage = await getPriceContext(origin, destination, departureDate, initialPrice, !returnDate);
-
-    const formattedDepartureDate = formatDateForSkyscanner(departureDate);
-    let purchaseLink = `https://www.skyscanner.com.br/transport/flights/${origin.toLowerCase()}/${destination.toLowerCase()}/${formattedDepartureDate}/`;
-    if (returnDate) {
-      const formattedReturnDate = formatDateForSkyscanner(returnDate);
-      purchaseLink += `${formattedReturnDate}/`;
-    }
-
-    const { data, error: supabaseError } = await supabase
-      .from('alerts')
-      .insert([{
-        user_email: userEmail,
-        origin,
-        destination,
-        departure_date: departureDate,
-        return_date: returnDate,
-        passengers,
-        last_price: initialPrice,
-        purchase_link: purchaseLink,
-        short_duration: shortDuration,
-      }])
-      .select();
-
-    if (supabaseError) {
-      throw new Error(`Erro no Supabase: ${supabaseError.message}`);
-    }
-
-    try {
-      const formattedPrice = initialPrice.toLocaleString('pt-BR', {
-        style: 'currency',
-        currency: 'BRL',
-      });
-
-      await resend.emails.send({
-        from: 'onboarding@resend.dev',
+    // --- Lógica de envio com SendGrid ---
+    const msg = {
         to: userEmail,
+        from: 'flaviofreitasleite@gmail.com', // IMPORTANTE: Use o seu e-mail verificado no SendGrid
         subject: `Seu Alerta de Voo foi Criado! (${origin} -> ${destination})`,
         html: `
           <div style="font-family: Arial, sans-serif; line-height: 1.6;">
             <h1>Alerta de Preço Ativado!</h1>
             <p>Olá!</p>
             <p>Confirmamos a criação do seu alerta para o voo de <strong>${origin}</strong> para <strong>${destination}</strong>.</p>
-            <p>O preço atual que encontramos foi de <strong style="font-size: 1.2em;">${formattedPrice}</strong>.</p>
+            <p>O preço mais baixo que encontramos foi de <strong style="font-size: 1.2em;">${formattedPrice}</strong>.</p>
             ${priceContextMessage ? `<p style="background-color: #e8f0fe; padding: 10px; border-radius: 8px;">${priceContextMessage}</p>` : ''}
-            <a href="${purchaseLink}" target="_blank" style="display: inline-block; padding: 12px 24px; margin: 20px 0; font-size: 16px; color: white; background-color: #00a698; text-decoration: none; border-radius: 8px;">
-              Ver Oferta no Skyscanner
+            <a href="${purchaseLink}" target="_blank" style="display: inline-block; padding: 12px 24px; margin: 20px 0; font-size: 16px; color: white; background-color: #1a73e8; text-decoration: none; border-radius: 8px;">
+              Ver Oferta no Google Flights
             </a>
             <br><br>
             <p>Boa viagem!</p>
             <p><em>Equipe Alerta de Voos</em></p>
           </div>
         `,
-      });
-    } catch (emailError) {
-      console.error("Erro ao enviar o e-mail de confirmação:", emailError);
-    }
+    };
+    
+    await sgMail.send(msg);
 
-    return NextResponse.json({
-      message: 'Alerta criado com sucesso! Enviamos um e-mail de confirmação.',
-      data: data,
-    });
+    return NextResponse.json({ message: 'Alerta criado com sucesso! Enviamos um e-mail de confirmação.' });
 
-  } catch (error: unknown) {
+  } catch (error) {
+    console.error('Erro na API /create-alert:', error);
     const errorMessage = error instanceof Error ? error.message : 'Ocorreu um erro desconhecido.';
-    console.error('Erro na API /create-alert:', errorMessage);
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
