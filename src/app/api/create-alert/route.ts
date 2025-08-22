@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import Amadeus from 'amadeus';
 import { Resend } from 'resend';
-
+import { PriceMetric, FlightOffer } from '@/app/types';
 // --- Inicializa os clientes ---
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -32,11 +32,11 @@ async function getPriceContext(origin: string, destination: string, departureDat
       oneWay: isOneWay,
     });
 
-    const metrics = response.data[0]?.priceMetrics;
+    const metrics = (response as unknown as { data: { priceMetrics: PriceMetric[] }[] }).data[0]?.priceMetrics;
     if (!metrics) return '';
 
-    const firstQuartile = parseFloat(metrics.find((m: any) => m.quartileRanking === 'FIRST')?.amount);
-    const thirdQuartile = parseFloat(metrics.find((m: any) => m.quartileRanking === 'THIRD')?.amount);
+    const firstQuartile = parseFloat(metrics.find((m: PriceMetric) => m.quartileRanking === 'FIRST')?.amount || '0');
+    const thirdQuartile = parseFloat(metrics.find((m: PriceMetric) => m.quartileRanking === 'THIRD')?.amount || '0');
 
     if (currentPrice <= firstQuartile) {
       return 'Este preço é considerado <strong>BAIXO</strong> para esta rota.';
@@ -50,7 +50,7 @@ async function getPriceContext(origin: string, destination: string, departureDat
     return '';
   } catch (error) {
     console.error("Erro ao buscar métricas de preço:", error);
-    return ''; // Retorna string vazia em caso de erro
+    return '';
   }
 }
 
@@ -180,9 +180,9 @@ export async function POST(request: Request) {
       data: data,
     });
 
-  } catch (error: any) {
-    console.error('Erro na API /create-alert:', error.response ? error.response.data : error.message);
-    const errorMessage = error.response?.data?.errors?.[0]?.detail || error.message || 'Ocorreu um erro desconhecido.';
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Ocorreu um erro desconhecido.';
+    console.error('Erro na API /create-alert:', errorMessage);
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }

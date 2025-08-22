@@ -4,12 +4,8 @@ import React, { useState, FormEvent, useEffect, useRef } from 'react';
 import { DayPicker } from 'react-day-picker';
 import type { DateRange } from 'react-day-picker';
 import 'react-day-picker/dist/style.css';
+import { Airport } from '@/app/types';
 
-// Interface para o tipo de dados do aeroporto
-interface Airport {
-  iataCode: string;
-  name: string;
-}
 
 // --- Componente Reutilizável de Autocomplete (Estilo Apple) ---
 const AutocompleteInput = ({ label, placeholder, onSelect, initialValue }: { label: string, placeholder: string, onSelect: (iataCode: string) => void, initialValue: string }) => {

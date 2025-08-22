@@ -1,7 +1,8 @@
 // Substitua o conteúdo do arquivo: app/api/search-airports/route.ts
 import { NextResponse } from 'next/server';
 import Amadeus from 'amadeus';
-
+import { CityData, AirportsData, Airport } from '@/app/types';
+import { AmadeusCityResponse } from '@/app/types';
 // Inicializa o cliente da Amadeus
 const amadeus = new Amadeus({
   clientId: process.env.AMADEUS_API_KEY!,
@@ -27,17 +28,16 @@ export async function GET(request: Request) {
     // CORRIGIDO: Usando o endpoint correto de busca de cidades com base na sua documentação
     const response = await amadeus.referenceData.locations.cities.get({
       keyword: sanitizedKeyword,
-      countryCode: 'BR', // Prioriza o Brasil
-      include: 'AIRPORTS', // Inclui os aeroportos da cidade na resposta
+      countryCode: 'BR',
+      include: 'AIRPORTS',
     });
 
-    const airportsData = response.result.included?.airports || {};
-    const results: { name: string; iataCode: string }[] = [];
+    const airportsData = (response as unknown as AmadeusCityResponse).result.included?.airports || {};
+    const results: Airport[] = [];
 
-    // Processa a resposta para extrair os aeroportos
     if (response.data) {
-      response.data.forEach((city: any) => {
-        city.relationships?.forEach((relation: any) => {
+      (response.data as CityData[]).forEach((city: CityData) => {
+        city.relationships?.forEach((relation: { type: string; id: string }) => {
           if (relation.type === 'Airport') {
             const airport = airportsData[relation.id];
             if (airport) {
@@ -54,7 +54,7 @@ export async function GET(request: Request) {
     console.log(`Encontrados ${results.length} aeroportos.`);
     return NextResponse.json(results);
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Erro ao buscar cidades/aeroportos na Amadeus:", error);
     return NextResponse.json({ error: 'Erro ao buscar dados.' }, { status: 500 });
   }

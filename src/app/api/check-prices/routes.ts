@@ -1,8 +1,8 @@
-// Salve este arquivo como: app/api/check-prices/route.ts
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import Amadeus from 'amadeus';
 import { Resend } from 'resend';
+import { Alert, FlightOffer } from '@/app/types';
 
 // --- Inicializa os clientes ---
 const supabase = createClient(
@@ -18,7 +18,7 @@ const amadeus = new Amadeus({
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // --- Função para buscar o preço atualizado de um voo ---
-async function getUpdatedFlightPrice(alert: any): Promise<number | null> {
+async function getUpdatedFlightPrice(alert: Alert): Promise<number | null> {
   try {
     const flightResponse = await amadeus.shopping.flightOffersSearch.get({
       originLocationCode: alert.origin,
@@ -30,7 +30,7 @@ async function getUpdatedFlightPrice(alert: any): Promise<number | null> {
       max: 1,
     });
 
-    const flightData = flightResponse.data[0];
+    const flightData = (flightResponse as unknown as { data: FlightOffer[] }).data[0];
     return flightData ? parseFloat(flightData.price.total) : null;
   } catch (error) {
     console.error(`Erro ao buscar preço para ${alert.origin}->${alert.destination}:`, error);
